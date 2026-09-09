@@ -1,0 +1,14 @@
+{
+  "name": "pase-cocina-escolar-backend",
+  "version": "1.0.0",
+  "description": "Backend del sistema PASE - Cocina Escolar",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "mysql2": "^3.11.0",
+    "cors": "^2.8.5"
+  }
+}

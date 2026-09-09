@@ -12,11 +12,11 @@ app.use(cors());
 // escribirlas a mano. En AlwaysData (u otro hosting) las defines tú mismo
 // en el panel de "Variables de entorno".
 const conexion = mysql.createConnection({
-  host: process.env.MYSQLHOST || "localhost",
-  port: process.env.MYSQLPORT || 3308,
-  user: process.env.MYSQLUSER || "root",
-  password: process.env.MYSQLPASSWORD || "",
-  database: process.env.MYSQLDATABASE || "cocina_escolar"
+  host: process.env.MYSQLHOST || 'localhost',
+  user: process.env.MYSQLUSER || 'root',
+  password: process.env.MYSQLPASSWORD || '',
+  database: process.env.MYSQLDATABASE || 'railway',
+  port: process.env.MYSQLPORT || 3306
 });
 
 // Verificar conexión a la base de datos

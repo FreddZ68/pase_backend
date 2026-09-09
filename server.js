@@ -179,6 +179,6 @@ app.delete("/utensilios/:id", (req, res) => {
 // AlwaysData (y la mayoría de hostings) asignan el puerto dinámicamente vía
 // variable de entorno; en tu máquina local, sin esa variable, sigue usando 3000.
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 Servidor iniciado en el puerto ${PORT}`);
+app.listen(PORT, () => {
+    console.log(`Servidor corriendo en el puerto ${PORT}`);
 });

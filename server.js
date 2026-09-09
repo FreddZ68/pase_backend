@@ -11,18 +11,25 @@ app.use(cors());
 // automáticamente al agregar un servicio MySQL al proyecto — no hay que
 // escribirlas a mano. En AlwaysData (u otro hosting) las defines tú mismo
 // en el panel de "Variables de entorno".
-const conexion = mysql.createConnection({
-  host: process.env.MYSQLHOST || 'localhost',
-  user: process.env.MYSQLUSER || 'root',
-  password: process.env.MYSQLPASSWORD || '',
-  database: process.env.MYSQLDATABASE || 'railway',
-  port: process.env.MYSQLPORT || 3306
+const conexion = mysql.createPool({
+  host: process.env.MYSQLHOST || "localhost",
+  user: process.env.MYSQLUSER || "root",
+  password: process.env.MYSQLPASSWORD || "",
+  database: process.env.MYSQLDATABASE || "railway",
+  port: process.env.MYSQLPORT || 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 });
 
-// Verificar conexión a la base de datos
-conexion.connect(error => {
-    if (error) throw error;
-    console.log(`Conectado a la base de datos MySQL en el host ${conexion.config.host}`);
+// Verificación sin 'throw error'
+conexion.getConnection((err, conn) => {
+  if (err) {
+    console.error("⚠️ Error de conexión a MySQL:", err.message);
+  } else {
+    console.log(`Conectado a MySQL en el host: ${process.env.MYSQLHOST || "localhost"}`);
+    conn.release();
+  }
 });
 
 app.get("/", (req, res) => {

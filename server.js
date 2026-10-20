@@ -1,64 +1,66 @@
-require('dotenv').config(); // Carga .env si estás en local (opcional)
+// Instalación (en la carpeta del proyecto):
+//   npm init -y
+//   npm install express mysql2 cors dotenv
+// Ejecución:
+//   node server.js
+
+require("dotenv").config();
 const express = require("express");
 const mysql = require("mysql2");
 const cors = require("cors");
 
 const app = express();
-app.use(express.json());
 app.use(cors());
+app.use(express.json());
 
-// Detectar si estamos conectando a un host remoto o local
-const dbHost = process.env.MYSQLHOST || process.env.DB_HOST || "localhost";
-const isLocal = dbHost === "localhost" || dbHost === "127.0.0.1";
+// Puerto: usa el de la nube (Render lo inyecta automáticamente) o 3000 en local
+const PORT = process.env.PORT || 3000;
 
-// Configuración de conexión (acepta URL completa o variables separadas)
-const poolConfig = (process.env.DATABASE_URL || process.env.MYSQL_URL)
-  ? {
-      uri: process.env.DATABASE_URL || process.env.MYSQL_URL,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-      ssl: isLocal ? false : { rejectUnauthorized: false }
-    }
-  : {
-      host: dbHost,
-      user: process.env.MYSQLUSER || process.env.DB_USER || "root",
-      password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || "",
-      database: process.env.MYSQLDATABASE || process.env.DB_NAME || "railway",
-      port: Number(process.env.MYSQLPORT || process.env.DB_PORT || 3306),
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-      // La mayoría de MySQL en la nube exigen SSL; en local se desactiva
-      ssl: isLocal ? false : { rejectUnauthorized: false }
-    };
-
-const conexion = mysql.createPool(poolConfig);
-
-// Verificación de conexión con logs detallados
-conexion.getConnection((err, conn) => {
-  if (err) {
-    console.error("⚠️ Error de conexión a MySQL:");
-    console.error(`   -> Host destino: ${dbHost}`);
-    console.error(`   -> Código: ${err.code || "N/A"}`);
-    console.error(`   -> Mensaje: ${err.message}`);
-  } else {
-    console.log(`✅ Conectado exitosamente a MySQL en: ${dbHost}`);
-    conn.release();
-  }
+// Conexión a MySQL / TiDB Cloud:
+// Usamos createPool para evitar caídas por inactividad (típico en TiDB Serverless).
+// Si DB_HOST está presente (estamos en Render/TiDB), se activa SSL automáticamente.
+// Si no existe (desarrollo local con XAMPP), conecta a localhost sin SSL.
+const conexion = mysql.createPool({
+  host: process.env.DB_HOST || "localhost",
+  port: Number(process.env.DB_PORT) || 4000, // TiDB Cloud usa el puerto 4000 por defecto
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "",
+  database: process.env.DB_NAME || "pase_in",
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  ssl: process.env.DB_HOST ? { minVersion: "TLSv1.2", rejectUnauthorized: true } : false,
 });
 
+// Verificación inicial de conexión
+conexion.getConnection((error, conn) => {
+  if (error) {
+    console.error("⚠️ Error al conectar con la base de datos:");
+    console.error(`   -> Host: ${process.env.DB_HOST || "localhost"}`);
+    console.error(`   -> Mensaje: ${error.message}`);
+    return;
+  }
+  console.log(`✅ Conectado exitosamente a la base de datos en: ${process.env.DB_HOST || "localhost"}`);
+  conn.release();
+});
+
+// Ruta base de prueba
 app.get("/", (req, res) => {
   res.send("Servidor de Cocina Escolar funcionando correctamente");
 });
 
-// --- RUTA: BUSCAR ESTUDIANTE ---
-app.get("/estudiantes/buscar/:codigo", (req, res) => {
-  const codigo = req.params.codigo;
-  const query = "SELECT * FROM estudiantes WHERE codigo_barra = ?";
+// ---------------- GESTIÓN DE ESTUDIANTES ----------------
 
-  conexion.query(query, [codigo], (err, results) => {
-    if (err) return res.status(500).json({ error: err.message });
+// Buscar estudiante por su código de barras
+app.get("/estudiantes/buscar/:codigo", (req, res) => {
+  const { codigo } = req.params;
+  const sql = "SELECT * FROM estudiantes WHERE codigo_barra = ?";
+
+  conexion.query(sql, [codigo], (error, results) => {
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ error: error.message });
+    }
 
     if (results.length > 0) {
       res.json({ existe: true, estudiante: results[0] });
@@ -68,139 +70,166 @@ app.get("/estudiantes/buscar/:codigo", (req, res) => {
   });
 });
 
-// --- RUTA: REGISTRAR ESTUDIANTE ---
+// Registrar un nuevo estudiante
 app.post("/estudiantes", (req, res) => {
   const { nombre, carnet, codigo_barra } = req.body;
-  const query = "INSERT INTO estudiantes (nombre, carnet, codigo_barra) VALUES (?, ?, ?)";
-  conexion.query(query, [nombre, carnet, codigo_barra], (err, result) => {
-    if (err) {
-      console.error("Error al insertar:", err);
-      return res.status(500).json({ error: err.message });
+
+  if (!nombre || !codigo_barra) {
+    return res.status(400).json({ mensaje: "El nombre y el código de barras son obligatorios" });
+  }
+
+  const sql = "INSERT INTO estudiantes (nombre, carnet, codigo_barra) VALUES (?, ?, ?)";
+
+  conexion.query(sql, [nombre, carnet || null, codigo_barra], (error) => {
+    if (error) {
+      console.error("Error al registrar estudiante:", error);
+      return res.status(500).json({ error: error.message });
     }
-    res.json({ status: "ok", mensaje: "Registrado con éxito" });
+    res.json({ status: "ok", mensaje: "Estudiante registrado con éxito" });
   });
 });
 
-// --- RUTA: REGISTRAR RETIRO ---
+// ---------------- MOVIMIENTOS (RETIROS Y DEVOLUCIONES) ----------------
+
+// Registrar retiro de utensilio
 app.post("/retiro", (req, res) => {
-  const { estudiante_id, utensilio_id } = req.body;
+  const { estudiante_id, utensilio_id } = req.body; // estudiante_id es el código de barras
 
-  conexion.query("SELECT id FROM estudiantes WHERE codigo_barra = ?", [estudiante_id], (err, results) => {
-    if (err) return res.status(500).json({ error: err.message });
+  if (!estudiante_id || !utensilio_id) {
+    return res.status(400).json({ mensaje: "Código de estudiante y utensilio son requeridos" });
+  }
 
-    if (results.length > 0) {
-      const realId = results[0].id;
-      const sqlInsert = `
-        INSERT INTO movimientos (estudiante_id, utensilio_id, fecha_retiro) 
-        VALUES (?, (SELECT id FROM utensilios WHERE tipo = ? LIMIT 1), NOW())
-      `;
-      conexion.query(sqlInsert, [realId, utensilio_id], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ status: "ok" });
-      });
-    } else {
-      res.status(404).json({ status: "error", mensaje: "Estudiante no encontrado" });
+  const sqlBuscar = "SELECT id FROM estudiantes WHERE codigo_barra = ?";
+  conexion.query(sqlBuscar, [estudiante_id], (error, results) => {
+    if (error) return res.status(500).json({ error: error.message });
+
+    if (results.length === 0) {
+      return res.status(404).json({ status: "error", mensaje: "Estudiante no encontrado" });
     }
+
+    const realId = results[0].id;
+    const sqlInsert = `
+      INSERT INTO movimientos (estudiante_id, utensilio_id, fecha_retiro) 
+      VALUES (?, (SELECT id FROM utensilios WHERE tipo = ? LIMIT 1), NOW())
+    `;
+
+    conexion.query(sqlInsert, [realId, utensilio_id], (errInsert) => {
+      if (errInsert) return res.status(500).json({ error: errInsert.message });
+      res.json({ status: "ok", mensaje: "Retiro registrado correctamente" });
+    });
   });
 });
 
-// --- RUTA: REGISTRAR DEVOLUCIÓN ---
+// Registrar devolución por ID de movimiento
 app.put("/devolucion/:id", (req, res) => {
+  const { id } = req.params;
   const sql = "UPDATE movimientos SET fecha_devolucion = NOW() WHERE id = ?";
-  conexion.query(sql, [req.params.id], (err) => {
-    if (err) return res.status(500).json({ status: "error", mensaje: err.message });
+
+  conexion.query(sql, [id], (error) => {
+    if (error) return res.status(500).json({ status: "error", mensaje: error.message });
     res.json({ status: "ok", mensaje: "Devolución registrada" });
   });
 });
 
-// --- RUTA: INFORME DIARIO ---
+// Listar retiros pendientes por código de barras
+app.get("/pendientes/:codigo", (req, res) => {
+  const { codigo } = req.params;
+  const sql = `
+    SELECT m.id, u.tipo, m.fecha_retiro
+    FROM movimientos m
+    JOIN estudiantes e ON m.estudiante_id = e.id
+    JOIN utensilios u ON m.utensilio_id = u.id
+    WHERE e.codigo_barra = ? AND m.fecha_devolucion IS NULL
+  `;
+
+  conexion.query(sql, [codigo], (error, resultados) => {
+    if (error) return res.status(500).json({ status: "error", mensaje: error.message });
+    res.json(resultados);
+  });
+});
+
+// ---------------- INFORMES ----------------
+
+// Informe diario de entregas
 app.get("/informe", (req, res) => {
   const sql = `
     SELECT u.tipo, COUNT(*) AS entregados
     FROM movimientos m
     JOIN utensilios u ON m.utensilio_id = u.id
     WHERE DATE(m.fecha_retiro) = CURDATE()
-    GROUP BY u.tipo;
+    GROUP BY u.tipo
   `;
-  conexion.query(sql, (err, resultados) => {
-    if (err) return res.status(500).json({ status: "error", mensaje: err.message });
+
+  conexion.query(sql, (error, resultados) => {
+    if (error) return res.status(500).json({ status: "error", mensaje: error.message });
     res.json(resultados);
   });
 });
 
-// --- RUTA: PENDIENTES ---
-app.get("/pendientes/:codigo", (req, res) => {
-  const codigo = req.params.codigo;
-  const sql = `
-    SELECT m.id, u.tipo, m.fecha_retiro
-    FROM movimientos m
-    JOIN estudiantes e ON m.estudiante_id = e.id
-    JOIN utensilios u ON m.utensilio_id = u.id
-    WHERE e.codigo_barra = ? AND m.fecha_devolucion IS NULL;
-  `;
-  conexion.query(sql, [codigo], (err, resultados) => {
-    if (err) return res.status(500).json({ status: "error", mensaje: err.message });
-    res.json(resultados);
-  });
-});
-
-// --- RUTA: INFORME HISTÓRICO POR FECHA ---
+// Informe histórico por fecha específica (YYYY-MM-DD)
 app.get("/informe/:fecha", (req, res) => {
-  const fecha = req.params.fecha;
+  const { fecha } = req.params;
   const sql = `
     SELECT u.tipo, COUNT(*) AS entregados
     FROM movimientos m
     JOIN utensilios u ON m.utensilio_id = u.id
     WHERE DATE(m.fecha_retiro) = ?
-    GROUP BY u.tipo;
+    GROUP BY u.tipo
   `;
-  conexion.query(sql, [fecha], (err, resultados) => {
-    if (err) return res.status(500).json({ status: "error", mensaje: err.message });
+
+  conexion.query(sql, [fecha], (error, resultados) => {
+    if (error) return res.status(500).json({ status: "error", mensaje: error.message });
     res.json(resultados);
   });
 });
 
-// --- RUTA: LISTAR UTENSILIOS ---
+// ---------------- CATÁLOGO DE UTENSILIOS ----------------
+
+// Listar inventario de utensilios
 app.get("/utensilios", (req, res) => {
-  conexion.query("SELECT id, tipo, cantidad FROM utensilios ORDER BY tipo", (err, resultados) => {
-    if (err) return res.status(500).json({ status: "error", mensaje: err.message });
+  const sql = "SELECT id, tipo, cantidad FROM utensilios ORDER BY tipo";
+
+  conexion.query(sql, (error, resultados) => {
+    if (error) return res.status(500).json({ status: "error", mensaje: error.message });
     res.json(resultados);
   });
 });
 
-// --- RUTA: AGREGAR UTENSILIO ---
+// Agregar nuevo tipo de utensilio
 app.post("/utensilios", (req, res) => {
   const { tipo, cantidad } = req.body;
   const sql = "INSERT INTO utensilios (tipo, cantidad) VALUES (?, ?)";
-  conexion.query(sql, [tipo, cantidad], (err, resultado) => {
-    if (err) return res.status(500).json({ status: "error", mensaje: err.sqlMessage || err.message });
+
+  conexion.query(sql, [tipo, cantidad], (error) => {
+    if (error) return res.status(500).json({ status: "error", mensaje: error.sqlMessage || error.message });
     res.json({ status: "ok", mensaje: "Utensilio agregado" });
   });
 });
 
-// --- RUTA: EDITAR UTENSILIO ---
+// Editar utensilio existente
 app.put("/utensilios/:id", (req, res) => {
+  const { id } = req.params;
   const { tipo, cantidad } = req.body;
-  const id = req.params.id;
-  const sql = "UPDATE utensilios SET tipo=?, cantidad=? WHERE id=?";
-  conexion.query(sql, [tipo, cantidad, id], (err, resultado) => {
-    if (err) return res.status(500).json({ status: "error", mensaje: err.sqlMessage || err.message });
+  const sql = "UPDATE utensilios SET tipo = ?, cantidad = ? WHERE id = ?";
+
+  conexion.query(sql, [tipo, cantidad, id], (error) => {
+    if (error) return res.status(500).json({ status: "error", mensaje: error.sqlMessage || error.message });
     res.json({ status: "ok", mensaje: "Utensilio actualizado" });
   });
 });
 
-// --- RUTA: ELIMINAR UTENSILIO ---
+// Eliminar utensilio
 app.delete("/utensilios/:id", (req, res) => {
-  const id = req.params.id;
-  const sql = "DELETE FROM utensilios WHERE id=?";
-  conexion.query(sql, [id], (err, resultado) => {
-    if (err) return res.status(500).json({ status: "error", mensaje: err.sqlMessage || err.message });
+  const { id } = req.params;
+  const sql = "DELETE FROM utensilios WHERE id = ?";
+
+  conexion.query(sql, [id], (error) => {
+    if (error) return res.status(500).json({ status: "error", mensaje: error.sqlMessage || error.message });
     res.json({ status: "ok", mensaje: "Utensilio eliminado" });
   });
 });
 
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`Servidor ejecutándose en el puerto ${PORT}`);
+// "0.0.0.0" permite conexiones en red local (pruebas) y en la nube (Render)
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor activo en el puerto ${PORT}`);
 });
